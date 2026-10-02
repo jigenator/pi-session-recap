@@ -1,0 +1,49 @@
+{
+  "name": "pi-session-recap",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A personal while-you-were-away recap extension for Pi.",
+  "license": "MIT",
+  "author": "Thomas Mustier",
+  "contributors": [
+    "Serge Baranov"
+  ],
+  "keywords": [
+    "pi-package"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jigenator/pi-session-recap.git"
+  },
+  "bugs": "https://github.com/jigenator/pi-session-recap/issues",
+  "homepage": "https://github.com/jigenator/pi-session-recap#readme",
+  "files": [
+    "index.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.0.0",
+    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@earendil-works/pi-tui": "1.0.0",
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  }
+}
