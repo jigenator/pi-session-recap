@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
@@ -107,15 +109,16 @@ test("/recap routes model selection, completes its subcommand, and rejects unkno
 	const s = f.instance();
 	assert.deepEqual([...s.commands.keys()], ["recap"], "no legacy /recap-model alias");
 	const complete = s.commands.get("recap").getArgumentCompletions;
-	assert.deepEqual(complete(""), [{ value: "model", label: "model" }]);
-	assert.deepEqual(complete("mo"), complete(""));
+	assert.deepEqual(complete(""), [{ value: "model", label: "model" }, { value: "keep", label: "keep" }]);
+	assert.deepEqual(complete("mo"), [{ value: "model", label: "model" }]);
+	assert.deepEqual(complete("ke"), [{ value: "keep", label: "keep" }]);
 	assert.equal(complete("unknown"), null);
 
 	await s.recap(" model ");
 	assert.equal(s.dialogs.length, 1);
-	for (const args of ["unknown", "model extra"]) {
+	for (const args of ["unknown", "model extra", "keep extra"]) {
 		await s.recap(args);
-		assert.deepEqual(s.notices.at(-1), { message: "Usage: /recap [model]", type: "warning" });
+		assert.deepEqual(s.notices.at(-1), { message: "Usage: /recap [model|keep]", type: "warning" });
 	}
 	assert.equal(s.dialogs.length, 1);
 	assert.equal(requests.length, 0);
@@ -192,12 +195,17 @@ test("nonempty CLI wins over disk, including invalid explicit fallback; empty CL
 	s.flags.set("recap-model", "anthropic/claude-haiku-4-5");
 	await s.pick();
 	assert.match(s.dialogs.at(-1).title, /--recap-model anthropic\/claude-haiku-4-5 overrides/);
+	f.disk('{"keep":"invalid"}');
+	s.flags.set("recap-model", "router/nested/model");
+	await s.recap();
+	assert.equal(requests.at(-1), f.selected, "invalid settings do not override the CLI model");
+	assert.doesNotMatch(s.notices.at(-1).message, /using automatic model/);
 });
 
 test("malformed JSON/schema and read failures safely use automatic selection with redacted warnings", async (t) => {
 	const f = fixture(t);
 	const s = f.instance();
-	for (const value of ["private-credential-payload", "null", "[]", "4", '{"model":5}', '{"model":""}', '{"model":"no-slash"}', '{"model":"p/"}', '{"model":"p/\\u001bmodel"}']) {
+	for (const value of ["private-credential-payload", "null", "[]", "4", '{"model":5}', '{"model":""}', '{"model":"no-slash"}', '{"model":"p/"}', '{"model":"p/\\u001bmodel"}', '{"keep":1}', '{"keep":null}', '{"keep":"true","model":"router/nested/model"}']) {
 		f.disk(value);
 		await s.recap();
 		assert.equal(requests.at(-1), f.haiku);
@@ -228,7 +236,7 @@ test("unknown saved model uses active fallback; runtime-only custom API stays li
 	assert.equal(s.notices.length, notices);
 });
 
-test("failed atomic rename never confirms saved or destroys old state and cleans its temp file", async (t) => {
+test("unreadable destination never confirms saved or destroys old state", async (t) => {
 	const f = fixture(t);
 	mkdirSync(f.path, { recursive: true });
 	writeFileSync(join(f.path, "owned-test-sentinel"), "unchanged");
@@ -336,3 +344,128 @@ test("a superseding picker owns cancellation and late old completion cannot clea
 	assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), { model: "router/nested/model" });
 	assert.equal(s.notices.length, 1);
 });
+
+
+test("keep is a native global On/Off choice, preserves model, and never generates", async (t) => {
+	const f = fixture(t);
+	const s = f.instance();
+	await s.recap("keep");
+	assert.equal(existsSync(getAgentDir()), false, "cancel does not create config");
+	assert.deepEqual(s.dialogs[0].options, ["On", "Off"]);
+	assert.match(s.dialogs[0].title, /global: Off/);
+	assert.match(s.dialogs[0].title, /compaction\/display rebuild/);
+	f.disk('{"model":"router/nested/model"}');
+	s.setChoice("On");
+	await s.recap(" keep ");
+	assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), { model: "router/nested/model", keep: true });
+	s.setChoice(undefined);
+	const original = readFileSync(f.path, "utf8");
+	await s.recap("keep");
+	assert.match(s.dialogs.at(-1).title, /global: On/);
+	assert.equal(readFileSync(f.path, "utf8"), original);
+	s.setChoice("Off");
+	await s.recap("keep");
+	assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), { model: "router/nested/model", keep: false });
+	assert.equal(requests.length, 0);
+	assert.equal(s.authCalls, 0);
+});
+
+for (const choice of ["router/nested/model", "Automatic (clear global default)"]) {
+	test(`model choice ${choice} preserves latest retention after an awaited dialog`, async (t) => {
+		const f = fixture(t);
+		f.disk('{"model":"anthropic/claude-haiku-4-5","keep":false}');
+		const s = f.instance();
+		const pendingChoice = Promise.withResolvers();
+		s.setChoice(() => pendingChoice.promise);
+		const pending = s.pick();
+		const other = f.instance();
+		other.setChoice("On");
+		await other.recap("keep");
+		pendingChoice.resolve(choice);
+		await pending;
+		assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), {
+			...(choice.startsWith("Automatic") ? {} : { model: choice }), keep: true,
+		});
+	});
+}
+
+test("keep merges the latest model written by another instance during its dialog", async (t) => {
+	const f = fixture(t);
+	f.disk('{"model":"anthropic/claude-haiku-4-5","keep":true}');
+	const s = f.instance();
+	const choice = Promise.withResolvers();
+	s.setChoice(() => choice.promise);
+	const pending = s.recap("keep");
+	const other = f.instance();
+	other.setChoice("router/nested/model");
+	await other.pick();
+	choice.resolve("Off");
+	await pending;
+	assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), { model: "router/nested/model", keep: false });
+});
+
+for (const action of ["keep", "model"]) {
+	test(`${action} refuses corrupt settings instead of clobbering another field`, async (t) => {
+		const f = fixture(t);
+		const s = f.instance();
+		const choice = Promise.withResolvers();
+		s.setChoice(() => choice.promise);
+		const pending = s.recap(action);
+		f.disk('{"keep":"private-payload","model":"router/nested/model"}');
+		choice.resolve(action === "keep" ? "On" : "router/nested/model");
+		await pending;
+		assert.equal(s.notices.at(-1).type, "error");
+		assert.doesNotMatch(JSON.stringify(s.notices), /private-payload|saved|retention on/);
+		assert.match(readFileSync(f.path, "utf8"), /private-payload/);
+		assert.deepEqual(readdirSync(getAgentDir()), ["session-recap.json"]);
+	});
+}
+
+for (const event of ["session_shutdown", "session_tree", "session_start", "input", "turn_start", "agent_start"]) {
+	test(`${event} cancels a pending keep dialog without saving`, async (t) => {
+		const f = fixture(t);
+		const s = f.instance();
+		const choice = Promise.withResolvers();
+		s.setChoice(() => choice.promise);
+		const pending = s.recap("keep");
+		s.handlers.get(event)({ reason: "startup" }, s.ctx);
+		assert.equal(s.dialogs[0].opts.signal.aborted, true);
+		choice.resolve("On");
+		await pending;
+		assert.equal(existsSync(f.path), false);
+		assert.deepEqual(s.notices, []);
+	});
+}
+
+test("keep write failure is redacted, cleans partial state, and never confirms success", async (t) => {
+	const f = fixture(t);
+	mkdirSync(f.path, { recursive: true });
+	const s = f.instance();
+	s.setChoice("On");
+	await s.recap("keep");
+	assert.deepEqual(s.notices.at(-1), { message: "session-recap: could not save global recap retention", type: "error" });
+	assert.deepEqual(readdirSync(getAgentDir()), ["session-recap.json"]);
+});
+
+
+for (const action of ["keep", "model"]) {
+	test(`${action}: atomic rename failure preserves both settings and removes temporary file`, async (t) => {
+		const f = fixture(t);
+		f.disk('{"model":"anthropic/claude-haiku-4-5","keep":true}');
+		const original = readFileSync(f.path, "utf8");
+		const s = f.instance();
+		s.setChoice(action === "keep" ? "Off" : "router/nested/model");
+		const mock = t.mock.method(fs, "renameSync", () => { throw new Error("private rename details"); });
+		syncBuiltinESMExports();
+		try {
+			await s.recap(action);
+		} finally {
+			mock.mock.restore();
+			syncBuiltinESMExports();
+		}
+		assert.equal(s.notices.at(-1).type, "error");
+		assert.doesNotMatch(JSON.stringify(s.notices), /private rename|saved|retention off/);
+		assert.equal(readFileSync(f.path, "utf8"), original);
+		assert.deepEqual(readdirSync(getAgentDir()), ["session-recap.json"]);
+	});
+}

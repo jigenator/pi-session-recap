@@ -1,8 +1,8 @@
 # pi-session-recap
 
-A personal [Pi](https://pi.dev) extension that leaves a short, temporary “while you were away” orientation at the end of the transcript. It states the high-level task, a recent result, and the next step or blocker after you return to one of several sessions.
+A personal [Pi](https://pi.dev) extension that leaves a short “while you were away” orientation in the transcript. It states the high-level task, a recent result, and the next step or blocker after you return to one of several sessions.
 
-The recap is UI only: it is not appended to the session, saved in conversation history, or sent to the main agent model. It disappears when input or agent work resumes.
+The recap is UI only: it is not appended to the session, saved in conversation history, or sent to the main or recap model as conversation context. By default it disappears when input or agent work resumes. `/recap keep` can retain completed recaps onscreen during ordinary work.
 
 ## Install
 
@@ -28,7 +28,7 @@ No install or live configuration change is performed by this repository’s test
 - **Orientation:** shortly after a session resumes or forks.
 - **Manual:** `/recap`, which bypasses the meaningful-activity gate.
 
-Quick pane switches do not call a model. A draft is cancelled and its UI is cleared when new work starts, `/tree` changes branches, a session is replaced, extensions reload, or Pi shuts down. Late responses are discarded after cancellation or if the projected session context changed.
+Quick pane switches do not call a model. A draft is cancelled when new work starts, `/tree` changes branches, a session is replaced, extensions reload, or Pi shuts down. Temporary UI is cleared at those boundaries; kept rows survive new work but not session/branch resets. Late responses are discarded after cancellation or if the projected session context changed.
 
 ## Flags
 
@@ -43,11 +43,19 @@ Quick pane switches do not call a model. A draft is cancelled and its UI is clea
 
 Durations are clamped to at least five seconds.
 
+## Onscreen retention
+
+Run `/recap keep` for Pi’s native **On / Off** choice, showing the current global preference. Escape cancels without saving or generating a recap. **Off** is the default. **On** keeps each subsequently completed recap as an ordinary chronological, wrapped transcript row in both regular and fullscreen modes. New input, agent turns, tool activity, notifications, and newer recaps do not replace earlier kept rows. Turning Off affects new recaps only; already-kept rows remain until the UI resets.
+
+This is **keep onscreen only**, not saved history: all kept rows disappear on compaction or display rebuild (including some `/settings` changes), reload, shutdown, session replacement, or branch navigation. There is no restoration from disk. Pi 1.0’s verified private layout is used only to append to its chat container; if that layout no longer matches, the extension warns and falls back to temporary display rather than pinning or persisting the text.
+
+The global boolean `keep` shares `<agent-dir>/session-recap.json` with the optional `model`, e.g. `{"model":"provider/id","keep":true}`. Both commands preserve the other setting, rereading it after the dialog before an atomic save; invalid/unreadable settings are not overwritten. Each newly displayed recap rereads retention, so running sessions sharing the agent directory see changes without watchers. No recap text is written to configuration, session entries, or model context.
+
 ## Model selection, privacy, and cost
 
 Run `/recap model` to choose a global default from Pi’s available provider/model list. The picker shows the saved choice and any active CLI override; it never calls a model or changes Pi’s main model. Escape cancels without saving. **Automatic** clears the default and restores the existing automatic policy (unless overridden).
 
-The choice is stored in `<agent-dir>/session-recap.json` as `{"model":"provider/id"}` (reset writes `{}`). The directory comes from Pi’s `getAgentDir()`: normally `~/.pi/agent`, respecting `PI_CODING_AGENT_DIR`, never project configuration or `settings.json`. Nothing is created on extension load. Each recap rereads the file, so already-running sessions sharing that directory see changes on their next recap; in-flight requests are not rerouted. Invalid/unreadable files warn without exposing their contents and use automatic selection. Failed saves report an error, not success.
+The choice is stored in `<agent-dir>/session-recap.json` as an optional `model` string alongside the optional `keep` boolean. Automatic removes only `model`, preserving retention (reset writes `{}` when no retention preference exists). The directory comes from Pi’s `getAgentDir()`: normally `~/.pi/agent`, respecting `PI_CODING_AGENT_DIR`, never project configuration or `settings.json`. Nothing is created on extension load. Each recap rereads the file, so already-running sessions sharing that directory see changes on their next recap; in-flight requests are not rerouted. Invalid/unreadable files warn without exposing their contents and use automatic model selection (unless overridden by `--recap-model`) and temporary display. Failed saves report an error, not success.
 
 The extension uses Pi’s authentication for the selected provider and chooses, in order:
 

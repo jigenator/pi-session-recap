@@ -3,6 +3,8 @@
 ## Unreleased (standalone fork)
 
 ### Added
+- `/recap keep` offers a global On/Off preference (default Off) for UI-only chronological recap rows in regular and fullscreen modes. Kept rows survive ordinary new work and newer recaps, but clear on transcript rebuild/compaction, reload, session replacement, shutdown, or branch navigation; never saved or included in model context.
+- Preserve model and retention independently through global setting writes, rereading after dialogs to avoid stale cross-session field overwrites. Add offline loader-aligned Pi host probes and configuration regressions.
 - `/recap model` picks a recap-only global default from Pi’s available models, with Automatic reset and no save on cancel. Persist in `<agent-dir>/session-recap.json`, respecting `PI_CODING_AGENT_DIR`; reread per request across sessions. CLI overrides take precedence, and the existing automatic policy remains unchanged. Runtime-only custom APIs remain listed but may not support standalone recaps.
 - Isolate the test suite’s global config in temporary agent directories; cover persistence, precedence, reset, cancellation, failures, and picker lifecycle cleanup without live inference.
 
