@@ -2,6 +2,10 @@
 
 ## Unreleased (standalone fork)
 
+### Added
+- `/recap model` picks a recap-only global default from Pi’s available models, with Automatic reset and no save on cancel. Persist in `<agent-dir>/session-recap.json`, respecting `PI_CODING_AGENT_DIR`; reread per request across sessions. CLI overrides take precedence, and the existing automatic policy remains unchanged. Runtime-only custom APIs remain listed but may not support standalone recaps.
+- Isolate the test suite’s global config in temporary agent directories; cover persistence, precedence, reset, cancellation, failures, and picker lifecycle cleanup without live inference.
+
 ### Fixed
 - Display recaps only for cleanly stopped responses; failed, aborted, and token-limit-truncated partial text is discarded. Adapted from upstream PR #106 by Serge Baranov (`CrazyCoder`), with provider error details redacted.
 - Cancel delayed resume work, in-flight requests, timers, focus listeners, and temporary UI at Pi 1.0 session replacement, reload, and shutdown boundaries.

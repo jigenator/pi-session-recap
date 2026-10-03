@@ -45,18 +45,23 @@ Durations are clamped to at least five seconds.
 
 ## Model selection, privacy, and cost
 
-The extension reuses Pi’s active provider authentication and chooses, in order:
+Run `/recap model` to choose a global default from Pi’s available provider/model list. The picker shows the saved choice and any active CLI override; it never calls a model or changes Pi’s main model. Escape cancels without saving. **Automatic** clears the default and restores the existing automatic policy (unless overridden).
 
-1. a `--recap-model` override found in Pi’s model registry;
-2. `anthropic/claude-haiku-4-5` for Anthropic sessions, when available;
-3. a same-provider GPT-5.6 Luna model for GPT sessions, when available;
-4. the active model.
+The choice is stored in `<agent-dir>/session-recap.json` as `{"model":"provider/id"}` (reset writes `{}`). The directory comes from Pi’s `getAgentDir()`: normally `~/.pi/agent`, respecting `PI_CODING_AGENT_DIR`, never project configuration or `settings.json`. Nothing is created on extension load. Each recap rereads the file, so already-running sessions sharing that directory see changes on their next recap; in-flight requests are not rerouted. Invalid/unreadable files warn without exposing their contents and use automatic selection. Failed saves report an error, not success.
 
-If a selected model has no usable authentication, the recap is skipped, not rerouted to another provider. Invalid overrides fall directly back to the active model rather than its cheaper sibling.
+The extension uses Pi’s authentication for the selected provider and chooses, in order:
+
+1. a nonempty `--recap-model` override;
+2. the saved global default;
+3. `anthropic/claude-haiku-4-5` for Anthropic sessions, when available;
+4. a same-provider GPT-5.6 Luna model for GPT sessions, when available;
+5. the active model.
+
+If a selected model has no usable authentication, the recap is skipped, not rerouted to another provider. Malformed or unknown CLI overrides, and unknown saved model IDs, fall directly back to the active model rather than its cheaper sibling.
 
 Pi 1.0 transcript system messages (including prompt sections and tool declarations) are excluded. A recap uses no tools, system prompt, skills, reasoning, or prompt-cache retention. Output is limited to 256 tokens. Input is the latest 30 projected messages, with bounded beginning/end excerpts for large tool results and initial requests, plus the active compaction or branch summary. This is a message-window bound, not a hard total-token budget: ordinary messages, images, and summaries can still be large. Only a clean `stopReason: "stop"` is displayed; failed, aborted, deferred, tool-use, pending, and token-limit-truncated responses are discarded. Errors are reported without provider details.
 
-A Pi-only custom API handler (for example, a runtime-only `claude-bridge` handler) cannot be routed by the standalone `pi-ai` compatibility completion. That case is skipped silently. Select a built-in API-backed provider/model with `--recap-model` if one is available. OpenAI Codex and Google models using built-in Pi API types are supported by the same completion path.
+A Pi-only custom API handler (for example, a runtime-only `claude-bridge` handler) cannot be routed by the standalone `pi-ai` compatibility completion. That case is skipped silently. Being listed in Pi’s picker is not proof of standalone recap compatibility; custom APIs are not filtered out. Select a built-in API-backed provider/model with `/recap model` or `--recap-model` if one is available. OpenAI Codex and Google models using built-in Pi API types are supported by the same completion path.
 
 Every automatic recap is a separate provider request and may incur cost. `--recap-disable`, longer timers, or a cheaper explicit model are the available controls.
 
@@ -72,7 +77,7 @@ Herdr findings are deliberately separated:
 
 ## Development checks
 
-All model responses in tests are local mocks; the suite performs no inference and reads no real credentials or transcripts.
+All model responses in tests are local mocks; the suite performs no inference and reads no real credentials or transcripts. The test preloader sets `PI_CODING_AGENT_DIR` to an owned temporary directory and removes it on exit, isolating all tests from the real global recap setting.
 
 ```bash
 npm install --ignore-scripts

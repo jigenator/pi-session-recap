@@ -3,10 +3,14 @@
  * See README.md for triggers, flags, and model selection.
  */
 
+import { randomUUID } from "node:crypto";
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { complete, completeSimple } from "@earendil-works/pi-ai/compat";
 import {
 	convertToLlm,
+	getAgentDir,
 	type ContextEditEntry,
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -180,6 +184,42 @@ export function selectRecapModel(
 	return available.find((model) => LUNA_RECAP_MODEL.test(model.id)) ?? activeModel;
 }
 
+function readRecapModel(path: string, ctx: ExtensionContext): string | undefined {
+	try {
+		const config: unknown = JSON.parse(readFileSync(path, "utf8"));
+		if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error();
+		const model = (config as { model?: unknown }).model;
+		if (model === undefined) return undefined;
+		if (typeof model !== "string" || model.indexOf("/") <= 0 || model.indexOf("/") === model.length - 1
+			|| /[\x00-\x1f\x7f]/.test(model)) {
+			throw new Error();
+		}
+		return model;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			ctx.ui.notify("session-recap: cannot read global recap model; using automatic selection", "warning");
+		}
+		return undefined;
+	}
+}
+
+function saveRecapModel(path: string, model: string | undefined): void {
+	mkdirSync(dirname(path), { recursive: true });
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	// Same-directory rename publishes a complete file; never touch settings.json.
+	const fd = openSync(temporary, "wx", 0o600);
+	try {
+		try {
+			writeFileSync(fd, `${JSON.stringify(model ? { model } : {}, null, 2)}\n`);
+		} finally {
+			closeSync(fd);
+		}
+		renameSync(temporary, path);
+	} finally {
+		try { unlinkSync(temporary); } catch {}
+	}
+}
+
 async function generateRecap(
 	recapContext: RecapContext,
 	ctx: ExtensionContext,
@@ -327,7 +367,7 @@ export default function (pi: ExtensionAPI) {
 		default: false,
 	});
 	pi.registerFlag("recap-model", {
-		description: "Override automatic model selection, e.g. anthropic/claude-sonnet-4-6",
+		description: "Override the global recap model and automatic selection, e.g. anthropic/claude-sonnet-4-6",
 		type: "string",
 		default: "",
 	});
@@ -337,6 +377,7 @@ export default function (pi: ExtensionAPI) {
 	let postTurnTimer: NodeJS.Timeout | undefined;
 	let resumeTimer: NodeJS.Timeout | undefined;
 	let activeController: AbortController | undefined;
+	let pickerController: AbortController | undefined;
 	let agentActive = false;
 	let awayRecapPending = false;
 	let unsubscribeFocus: (() => void) | undefined;
@@ -381,8 +422,13 @@ export default function (pi: ExtensionAPI) {
 		activeController = undefined;
 	};
 
+	const cancelPicker = () => {
+		pickerController?.abort();
+		pickerController = undefined;
+	};
+
 	const generateAndShow = async (ctx: ExtensionContext, reason: RecapReason) => {
-		if (!ctx.hasUI || ctx.mode !== "tui") return;
+		if (!ctx.hasUI || ctx.mode !== "tui" || pickerController) return;
 		if (reason !== "manual" && activeController) return;
 		const projection = ctx.sessionManager.buildSessionProjection();
 		if (reason !== "manual" && !hasMeaningfulActivity(projection.entries)) return;
@@ -401,7 +447,8 @@ export default function (pi: ExtensionAPI) {
 		if (showStatus) ctx.ui.setStatus(RECAP_KEY, ctx.ui.theme.fg("dim", "✦ drafting recap…"));
 
 		try {
-			const override = String(pi.getFlag("recap-model") ?? "").trim() || undefined;
+			const override = String(pi.getFlag("recap-model") ?? "").trim()
+				|| readRecapModel(join(getAgentDir(), "session-recap.json"), ctx);
 			const recap = await generateRecap(recapContext, ctx, override, controller.signal);
 			if (!recap || controller.signal.aborted) return;
 			const currentContext = buildRecapContext(
@@ -527,6 +574,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_start", (_event, ctx) => {
+		cancelPicker();
 		clearIdleTimer();
 		clearPostTurnTimer();
 		clearResumeTimer();
@@ -535,6 +583,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("input", (_event, ctx) => {
+		cancelPicker();
 		clearIdleTimer();
 		clearPostTurnTimer();
 		clearAwayTimer();
@@ -545,6 +594,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_start", (_event, ctx) => {
+		cancelPicker();
 		agentActive = true;
 		clearIdleTimer();
 		clearPostTurnTimer();
@@ -563,6 +613,7 @@ export default function (pi: ExtensionAPI) {
 
 	// /tree changes branches without session_shutdown or session_start.
 	pi.on("session_tree", (_event, ctx) => {
+		cancelPicker();
 		clearIdleTimer();
 		clearAwayTimer();
 		clearPostTurnTimer();
@@ -574,6 +625,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
+		cancelPicker();
 		agentActive = false;
 		awayRecapPending = false;
 		focusEventsSeen = false;
@@ -588,6 +640,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", (event, ctx) => {
+		cancelPicker();
 		// The same extension runtime can bind a replacement session. Nothing from
 		// the previous session may dedupe, render, or fire later in this one.
 		clearResumeTimer();
@@ -604,7 +657,51 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("recap", {
-		description: "Generate a recap of recent session activity",
-		handler: (_args, ctx) => generateAndShow(ctx, "manual"),
+		description: "Generate a recap; /recap model selects its global default model",
+		getArgumentCompletions: (prefix) => "model".startsWith(prefix) ? [{ value: "model", label: "model" }] : null,
+		handler: async (args, ctx) => {
+			if (!ctx.hasUI || ctx.mode !== "tui") return;
+			const action = args.trim();
+			if (!action) return generateAndShow(ctx, "manual");
+			if (action !== "model") {
+				ctx.ui.notify("Usage: /recap [model]", "warning");
+				return;
+			}
+			cancelPicker();
+			clearIdleTimer();
+			clearAwayTimer();
+			clearPostTurnTimer();
+			clearResumeTimer();
+			cancelActive();
+			awayRecapPending = false;
+			clearRecap(ctx);
+			const controller = new AbortController();
+			pickerController = controller;
+			// Capture plain choices/path before awaiting; lifecycle events dismiss
+			// the dialog and prevent writes or old-context UI after navigation.
+			const path = join(getAgentDir(), "session-recap.json");
+			try {
+				const saved = readRecapModel(path, ctx);
+				const override = String(pi.getFlag("recap-model") ?? "").trim();
+				const automatic = "Automatic (clear global default)";
+				const choices = [...new Set(ctx.modelRegistry.getAvailable().map((model) => `${model.provider}/${model.id}`))];
+				const title = `Recap model — saved: ${saved ?? "Automatic"}`
+					+ (override ? `\n--recap-model ${override} overrides this default in this session.` : "")
+					+ "\nAvailable in Pi does not guarantee standalone recap support for custom APIs.";
+				const choice = await ctx.ui.select(title, [automatic, ...choices], { signal: controller.signal });
+				if (controller.signal.aborted || pickerController !== controller || choice === undefined) return;
+				if (choice !== automatic && !choices.includes(choice)) return;
+				saveRecapModel(path, choice === automatic ? undefined : choice);
+				lastDraftedContext = undefined;
+				ctx.ui.notify(choice === automatic
+					? "session-recap: global recap model cleared; automatic selection restored (unless overridden)"
+					: `session-recap: global recap model saved: ${choice}`, "info");
+			} catch {
+				if (!controller.signal.aborted) ctx.ui.notify("session-recap: could not save global recap model", "error");
+			} finally {
+				if (pickerController === controller) pickerController = undefined;
+			}
+		},
 	});
+
 }
