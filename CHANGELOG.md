@@ -3,6 +3,8 @@
 ## Unreleased (standalone fork)
 
 ### Added
+- `/recap detailed` generates an on-demand, multiline breakdown of the current active branch from its beginning, including pre-compaction messages with latest context edits applied. Exclude compaction/branch summaries and disclose summary-only coverage gaps rather than reintroducing stale redactions or abandoned work. Allow up to 4,096 output tokens (capped by the selected model); ordinary and automatic recaps remain brief with no saved detail preference.
+- Add `detailed` to native `/recap` argument suggestions and usage help. Cover actual editor Tab completion, full-branch edits, stale/cancelled results, unchanged model/auth, no persistence, and wrapped detailed UI with keep On/Off in regular/fullscreen host probes.
 - `/recap keep` offers a global On/Off preference (default Off) for UI-only chronological recap rows in regular and fullscreen modes. Kept rows survive ordinary new work and newer recaps, but clear on transcript rebuild/compaction, reload, session replacement, shutdown, or branch navigation; never saved or included in model context.
 - Preserve model and retention independently through global setting writes, rereading after dialogs to avoid stale cross-session field overwrites. Add offline loader-aligned Pi host probes and configuration regressions.
 - `/recap model` picks a recap-only global default from Pi’s available models, with Automatic reset and no save on cancel. Persist in `<agent-dir>/session-recap.json`, respecting `PI_CODING_AGENT_DIR`; reread per request across sessions. CLI overrides take precedence, and the existing automatic policy remains unchanged. Runtime-only custom APIs remain listed but may not support standalone recaps.

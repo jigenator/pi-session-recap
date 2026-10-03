@@ -26,9 +26,17 @@ No install or live configuration change is performed by this repository’s test
 - **Turn ended while away:** after a short debounce, once Pi reaches `agent_settled` (after retries, compaction, or queued continuation).
 - **Idle fallback:** 120 seconds after `turn_end` until a real focus event has been seen. Use this when the terminal or multiplexer does not forward focus reliably.
 - **Orientation:** shortly after a session resumes or forks.
-- **Manual:** `/recap`, which bypasses the meaningful-activity gate.
+- **Manual:** `/recap` for a brief orientation, or `/recap detailed` for an on-demand breakdown of the current session. Both bypass the meaningful-activity gate.
 
 Quick pane switches do not call a model. A draft is cancelled when new work starts, `/tree` changes branches, a session is replaced, extensions reload, or Pi shuts down. Temporary UI is cleared at those boundaries; kept rows survive new work but not session/branch resets. Late responses are discarded after cancellation or if the projected session context changed.
+
+## Detailed recap and autocomplete
+
+Run `/recap detailed` for a headed, bulleted breakdown from the beginning of the **current active session branch**: the goal and changing requests, earlier work, decisions, results/tests, useful files/artifacts, blockers, unfinished work and next actions. It asks the recap model to distinguish completed, proposed, unverified and failed work and ground claims in the supplied history. `/recap` and all automatic triggers remain brief; there is no saved detail preference.
+
+Detailed input includes all available messages on that branch, including pre-compaction work, with Pi's latest branch-local context replacements/removals applied. It does not read other sessions or abandoned branches. Compaction and branch summaries are excluded because they can contain stale redacted content or abandoned-path work; system prompts and tool declarations are excluded too. Where summaries were excluded, the request tells the model to disclose that only available edited active-branch messages are covered: **summary-only/imported history cannot be reconstructed**. This is not an exhaustive audit of raw history. Request-local extension `context` transformations are not replayed; persisted `context_edit` entries are honored.
+
+Type `/recap ` to see Pi's native suggestions: `model`, `keep`, and `detailed`. Type a prefix such as `/recap det` and press Tab to complete the suggested subcommand. Both recap modes use the same selected model/authentication, separate provider call, cancellation checks, and UI-only keep On/Off behavior. Neither the command operation nor its result is inserted into main-model history; recap text is never persisted by this extension.
 
 ## Flags
 
@@ -67,11 +75,17 @@ The extension uses Pi’s authentication for the selected provider and chooses, 
 
 If a selected model has no usable authentication, the recap is skipped, not rerouted to another provider. Malformed or unknown CLI overrides, and unknown saved model IDs, fall directly back to the active model rather than its cheaper sibling.
 
-Pi 1.0 transcript system messages (including prompt sections and tool declarations) are excluded. A recap uses no tools, system prompt, skills, reasoning, or prompt-cache retention. Output is limited to 256 tokens. Input is the latest 30 projected messages, with bounded beginning/end excerpts for large tool results and initial requests, plus the active compaction or branch summary. This is a message-window bound, not a hard total-token budget: ordinary messages, images, and summaries can still be large. Only a clean `stopReason: "stop"` is displayed; failed, aborted, deferred, tool-use, pending, and token-limit-truncated responses are discarded. Errors are reported without provider details.
+Pi 1.0 transcript system messages (including prompt sections and tool declarations) are excluded. A recap uses no tools, system prompt, skills, reasoning, or prompt-cache retention.
+
+- **Brief:** output is limited to 256 tokens and normalized to a single paragraph. Input remains the latest 30 projected messages (extended backward when necessary to retain a tool-call boundary), plus the initial request and active compaction or branch summary. Long initial-request framing retains its first/last 4,000 characters.
+- **Detailed:** output preserves headings/bullets/newlines and allows up to 4,096 tokens, capped by the selected model's declared output maximum. Input spans the edited active branch without a message-window bound or initial-request truncation; summaries are excluded as described above.
+- **Both:** each long tool-result text block retains its first/last 2,000 characters with a truncation marker. There is no hard total-input-token budget: ordinary messages, tool calls, images, and (for brief recaps) summaries can still be large. A long detailed session may exceed the selected provider's context limit and fail; there is no automatic chunking, retry, extra summarization call, or silent fallback to recent-only history.
+
+Only a clean `stopReason: "stop"` is displayed; failed, aborted, deferred, tool-use, pending, and token-limit-truncated responses are discarded. Errors are reported without provider details.
 
 A Pi-only custom API handler (for example, a runtime-only `claude-bridge` handler) cannot be routed by the standalone `pi-ai` compatibility completion. That case is skipped silently. Being listed in Pi’s picker is not proof of standalone recap compatibility; custom APIs are not filtered out. Select a built-in API-backed provider/model with `/recap model` or `--recap-model` if one is available. OpenAI Codex and Google models using built-in Pi API types are supported by the same completion path.
 
-Every automatic recap is a separate provider request and may incur cost. `--recap-disable`, longer timers, or a cheaper explicit model are the available controls.
+Every generated recap is one separate provider request and may incur cost; detailed recaps can cost more because they send more history. `--recap-disable`, longer timers, or a cheaper explicit model are the available controls.
 
 ## Pi 1.0 and Herdr status
 

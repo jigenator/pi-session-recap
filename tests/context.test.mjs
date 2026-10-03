@@ -253,3 +253,67 @@ test("compacted recap context does not restore an omitted original request", () 
 	assert.match(context.broaderContext, /Initial user request:\nUse this surviving task instead\./);
 	assert.doesNotMatch(context.broaderContext, /preserves the user's task framing/);
 });
+
+function detailed(entries) {
+	const branch = completeBranch(entries);
+	const before = JSON.stringify(branch);
+	const context = buildRecapContext(buildSessionProjection(branch).entries, branch, "detailed");
+	assert.equal(JSON.stringify(branch), before, "projection must not mutate raw branch entries");
+	return context;
+}
+
+test("detailed covers all 80 messages from the beginning, without the brief initial-request bound", () => {
+	const branch = [];
+	for (let i = 0; i < 40; i++) {
+		branch.push(
+			{ type: "message", message: { role: "user", content: i === 0 ? "early ".repeat(2000) : `Request ${i}` } },
+			{ type: "message", message: { role: "assistant", content: [{ type: "text", text: `Result ${i}` }] } },
+		);
+	}
+	const context = detailed(branch);
+	assert.equal(context.messages.length, 80);
+	assert.equal(context.messages[0].content, "early ".repeat(2000));
+	assert.match(JSON.stringify(context), /Result 0/);
+	assert.match(JSON.stringify(context), /Result 39/);
+	assert.equal(context.broaderContext, undefined);
+});
+
+test("detailed reprojects pre-compaction history with latest edits, never stale summaries or system state", () => {
+	const context = detailed([
+		{ type: "message", id: "system", message: { role: "system", content: "PRIVATE SYSTEM", toolsAdded: [{ name: "PRIVATE TOOL" }] } },
+		{ type: "message", id: "initial", message: { role: "user", content: "DELETED INITIAL" } },
+		{ type: "message", id: "early", message: { role: "assistant", content: [{ type: "text", text: "EARLY RAW" }] } },
+		{ type: "message", id: "removed", message: { role: "user", content: "REMOVED REQUEST" } },
+		{ type: "message", id: "tool", message: { role: "toolResult", toolCallId: "call", toolName: "read", content: [{ type: "text", text: "RAW TOOL RESULT" }] } },
+		{ type: "custom_message", id: "custom", customType: "fixture", content: "RAW CUSTOM", display: false },
+		{ type: "context_edit", targetId: "initial", replacement: { content: "Corrected original task" } },
+		{ type: "context_edit", targetId: "early", replacement: { content: "FIRST REPLACEMENT" } },
+		{ type: "context_edit", targetId: "removed", replacement: null },
+		{ type: "context_edit", targetId: "tool", replacement: { content: "Corrected test result" } },
+		{ type: "context_edit", targetId: "custom", replacement: { content: "Corrected custom result" } },
+		{ type: "compaction", id: "compact1", summary: "STALE SUMMARY DELETED INITIAL", firstKeptEntryId: "compact1", tokensBefore: 100, systemMessage: { role: "system", content: "PRIVATE CHECKPOINT" } },
+		{ type: "message", message: { role: "user", content: "Middle request" } },
+		{ type: "compaction", id: "compact2", summary: "SECOND STALE SUMMARY", firstKeptEntryId: "compact2", tokensBefore: 100 },
+		{ type: "context_edit", targetId: "early", replacement: { content: "Latest early result" } },
+		{ type: "branch_summary", fromId: "abandoned", summary: "ABANDONED PATH" },
+		{ type: "message", id: "current", message: { role: "user", content: "Current request" } },
+	]);
+	const text = JSON.stringify(context);
+	for (const expected of ["Corrected original task", "Latest early result", "Corrected test result", "Corrected custom result", "Middle request", "Current request"]) assert.ok(text.includes(expected));
+	assert.doesNotMatch(text, /DELETED|REMOVED|RAW|PRIVATE|STALE|ABANDONED|FIRST REPLACEMENT/);
+	assert.match(context.broaderContext, /Summary-only\/imported history and abandoned branches are not reconstructed/);
+	assert.equal(context.messages[1].content[0].text, "Latest early result", "SDK normalizes assistant replacement strings");
+});
+
+test("detailed retains tool excerpt bounds and excludes context-invisible bash and custom state", () => {
+	const context = detailed([
+		initialEntry,
+		...currentEntries,
+		{ type: "message", message: { role: "bashExecution", command: "PRIVATE COMMAND", output: "PRIVATE OUTPUT", excludeFromContext: true } },
+		{ type: "custom", customType: "private", data: "PRIVATE STATE" },
+	]);
+	assert.doesNotMatch(JSON.stringify(context), /PRIVATE|The recap extension now works/);
+	assert.match(JSON.stringify(context), /tool result truncated for recap/);
+	assert.equal(context.messages.at(-1).content[0].text,
+		`${toolResult.slice(0, 2000)}\n… [tool result truncated for recap] …\n${toolResult.slice(-2000)}`);
+});

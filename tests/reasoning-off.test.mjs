@@ -48,9 +48,9 @@ function makePi() {
 }
 
 const branch = [
-	{ type: "message", message: { role: "user", content: "Please fix the bridge integration." } },
+	{ type: "message", id: "user", parentId: null, message: { role: "user", content: "Please fix the bridge integration." } },
 	{
-		type: "message",
+		type: "message", id: "assistant", parentId: "user",
 		message: {
 			role: "assistant",
 			content: [{ type: "text", text: "I inspected the integration and prepared the next change." }],
@@ -103,27 +103,32 @@ const pi = makePi();
 sessionRecap(pi);
 const recap = pi.commands.get("recap").handler;
 
-await recap("", makeCtx(makeModel("openai-codex-responses", "gpt-5.6-luna")));
-await recap("", makeCtx(makeModel("anthropic-messages", "claude-haiku-4-5")));
+for (const mode of ["", "detailed"]) {
+	await recap(mode, makeCtx(makeModel("openai-codex-responses", "gpt-5.6-luna")));
+	await recap(mode, makeCtx(makeModel("anthropic-messages", "claude-haiku-4-5")));
 
-const codex = calls.find((c) => c.api === "openai-codex-responses");
-const anthropic = calls.find((c) => c.api === "anthropic-messages");
+	const codex = calls.findLast((c) => c.api === "openai-codex-responses");
+	const anthropic = calls.findLast((c) => c.api === "anthropic-messages");
 
-assert.ok(codex, "codex recap should have issued a request");
-assert.equal(codex.kind, "stream", "codex recaps must use complete(), not completeSimple()");
-assert.equal(codex.options.reasoningEffort, "none", "codex recaps must disable reasoning explicitly");
+	assert.ok(codex, "codex recap should have issued a request");
+	assert.equal(codex.kind, "stream", "codex recaps must use complete(), not completeSimple()");
+	assert.equal(codex.options.reasoningEffort, "none", "codex recaps must disable reasoning explicitly");
 
-assert.ok(anthropic, "anthropic recap should have issued a request");
-assert.equal(anthropic.kind, "streamSimple", "other apis keep using completeSimple()");
-assert.equal(
-	anthropic.options.reasoning,
-	undefined,
-	"omitting `reasoning` is what disables thinking on non-codex apis",
-);
-assert.equal(
-	anthropic.options.reasoningEffort,
-	undefined,
-	"completeSimple has no reasoningEffort option — it would be silently dropped",
-);
+	assert.ok(anthropic, "anthropic recap should have issued a request");
+	assert.equal(anthropic.kind, "streamSimple", "other apis keep using completeSimple()");
+	assert.equal(
+		anthropic.options.reasoning,
+		undefined,
+		"omitting `reasoning` is what disables thinking on non-codex apis",
+	);
+	assert.equal(
+		anthropic.options.reasoningEffort,
+		undefined,
+		"completeSimple has no reasoningEffort option — it would be silently dropped",
+	);
+
+	assert.equal(codex.options.maxTokens, mode === "detailed" ? 4096 : 256);
+	assert.equal(anthropic.options.maxTokens, mode === "detailed" ? 4096 : 256);
+}
 
 console.log("reasoning-off test passed");

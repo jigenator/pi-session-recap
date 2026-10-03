@@ -109,16 +109,17 @@ test("/recap routes model selection, completes its subcommand, and rejects unkno
 	const s = f.instance();
 	assert.deepEqual([...s.commands.keys()], ["recap"], "no legacy /recap-model alias");
 	const complete = s.commands.get("recap").getArgumentCompletions;
-	assert.deepEqual(complete(""), [{ value: "model", label: "model" }, { value: "keep", label: "keep" }]);
+	assert.deepEqual(complete(""), [{ value: "model", label: "model" }, { value: "keep", label: "keep" }, { value: "detailed", label: "detailed" }]);
 	assert.deepEqual(complete("mo"), [{ value: "model", label: "model" }]);
 	assert.deepEqual(complete("ke"), [{ value: "keep", label: "keep" }]);
+	assert.deepEqual(complete("det"), [{ value: "detailed", label: "detailed" }]);
 	assert.equal(complete("unknown"), null);
 
 	await s.recap(" model ");
 	assert.equal(s.dialogs.length, 1);
-	for (const args of ["unknown", "model extra", "keep extra"]) {
+	for (const args of ["unknown", "model extra", "keep extra", "detailed extra"]) {
 		await s.recap(args);
-		assert.deepEqual(s.notices.at(-1), { message: "Usage: /recap [model|keep]", type: "warning" });
+		assert.deepEqual(s.notices.at(-1), { message: "Usage: /recap [model|keep|detailed]", type: "warning" });
 	}
 	assert.equal(s.dialogs.length, 1);
 	assert.equal(requests.length, 0);

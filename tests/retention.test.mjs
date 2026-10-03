@@ -29,7 +29,7 @@ async function fixture(t, mode) {
 	const settings = (keep) => writeFileSync(path, JSON.stringify({ keep }));
 	requests.length = 0;
 	response = async () => ({ role: "assistant", content: [{ type: "text", text: "Kept orientation. " + "界 task result next step ".repeat(8) }], stopReason: "stop" });
-	const branch = [{ type: "message", message: { role: "user", content: "Build the feature", timestamp: 1 } }];
+	const branch = [{ type: "message", id: "initial", parentId: null, timestamp: new Date(1).toISOString(), message: { role: "user", content: "Build the feature", timestamp: 1 } }];
 	const before = JSON.stringify(branch);
 	const model = { provider: "retention", id: "fixture", api: API, name: "fixture", reasoning: false, input: ["text"], contextWindow: 100000, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 	const manager = {
@@ -81,6 +81,30 @@ async function fixture(t, mode) {
 }
 
 for (const mode of ["fullscreen", "regular"]) {
+	for (const keep of [false, true]) {
+		test(`${mode}: detailed multiline recap wraps with keep ${keep ? "On" : "Off"} and remains UI only`, async (t) => {
+			const f = await fixture(t, mode);
+			f.settings(keep);
+			const output = "## Earlier work\n\n- " + "界 detailed result ".repeat(25)
+				+ "\n\n## Next actions\n- Verify the final artifact.";
+			response = async () => ({ role: "assistant", content: [{ type: "text", text: output }], stopReason: "stop" });
+			await f.configure("detailed");
+			const render = (width) => [f.host.documentContainer, f.host.widgetContainerAbove]
+				.flatMap((component) => component.render(width));
+			for (const width of [20, 80, 120]) {
+				const lines = render(width);
+				assert.match(lines.join("\n"), /## Earlier work/);
+				assert.match(lines.join("\n"), /## Next actions/);
+				assert.ok(lines.some((line) => line.includes("- Verify")), "bullets retain newlines");
+				for (const line of lines) assert.ok(visibleWidth(line) <= width, `native wrapping at ${width}`);
+			}
+			assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")), { keep });
+			assert.doesNotMatch(JSON.stringify(requests), /Earlier work|Verify the final artifact/);
+			assert.equal(requests.length, 1);
+			f.handlers.get("input")({}, f.ctx);
+			assert.equal(render(80).join("\n").includes("## Earlier work"), keep);
+		});
+	}
 	test(`${mode}: retained chronological rows survive new input/agent/turn/tool activity and another recap`, async (t) => {
 		const f = await fixture(t, mode);
 		f.settings(true);
