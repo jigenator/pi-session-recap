@@ -1,5 +1,7 @@
 # pi-session-recap
 
+> **Moved.** This extension now lives in [jigenator/industrial-os](https://github.com/jigenator/industrial-os/tree/main/pi/session-recap) at `pi/session-recap/`, with its full history. This repository is archived and no longer updated. Install it from there with the filtered industrial-os entry in [its README](https://github.com/jigenator/industrial-os/tree/main/pi/session-recap#readme).
+
 A personal [Pi](https://pi.dev) extension that leaves a short “while you were away” orientation in the transcript. It states the high-level task, a recent result, and the next step or blocker after you return to one of several sessions.
 
 The recap is UI only: it is not appended to the session, saved in conversation history, or sent to the main or recap model as conversation context. By default it disappears when input or agent work resumes. `/recap keep` can retain completed recaps onscreen during ordinary work.
