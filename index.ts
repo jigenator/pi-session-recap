@@ -39,10 +39,6 @@ const ANTHROPIC_RECAP_MODEL = "claude-haiku-4-5";
 const GPT_MODEL_ID = /(?:^|\/)gpt-/;
 const LUNA_RECAP_MODEL = /(?:^|\/)gpt-5[.-]6-luna(?:$|[@:])/;
 
-// Debounce after a turn ends while blurred, so mid-loop turn_ends (which are
-// immediately followed by the next turn_start) don't trigger drafts.
-const POST_TURN_DEBOUNCE_MS = 3000;
-
 // `completeSimple` cannot express "reasoning off": its `reasoning` option only
 // accepts real thinking levels. Omitting it disables thinking on every API we
 // use except openai-codex-responses, which sends no reasoning field at all and
@@ -255,6 +251,21 @@ function saveRecapSettings(path: string, settings: RecapSettings): void {
 	}
 }
 
+// Provider messages can echo request details, so only a status code or a known
+// network error code is shown, never the provider's own text.
+export function describeFailure(error: unknown): string {
+	const text = error instanceof Error ? error.message : String(error ?? "");
+	const property = (error as { status?: unknown } | undefined)?.status;
+	const status = typeof property === "number" && property >= 400 && property <= 599
+		? String(property)
+		: /(?:"code"\s*:\s*|\bstatus(?:\s+code)?\s*:?\s*|^\s*)([45]\d\d)\b/i.exec(text)?.[1];
+	if (status === "429") return "HTTP 429: rate limit or spending cap reached";
+	if (status === "401" || status === "403") return `HTTP ${status}: key rejected`;
+	if (status) return `HTTP ${status}`;
+	const network = /\b(ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN)\b/.exec(text)?.[1];
+	return network ? `network error ${network}` : "provider error";
+}
+
 async function generateRecap(
 	recapContext: RecapContext,
 	ctx: ExtensionContext,
@@ -322,7 +333,7 @@ async function generateRecap(
 	// pi-ai resolves with the partial assistant message when a stream fails, is
 	// aborted, or reaches its token cap. Only a complete response can orient the
 	// user; never turn a fragment into a recap.
-	if (response.stopReason === "error") throw new Error("recap request failed");
+	if (response.stopReason === "error") throw new Error(response.errorMessage ?? "");
 	if (response.stopReason !== "stop") return undefined;
 
 	const text = response.content
@@ -435,7 +446,7 @@ export function createRetainedRecapUI(ctx: ExtensionContext) {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("recap-away-seconds", {
-		description: "Seconds of continuous terminal blur before an away recap is generated",
+		description: "Seconds of continuous terminal blur before returning drafts one recap",
 		type: "string",
 		default: String(DEFAULT_AWAY_SECONDS),
 	});
@@ -468,15 +479,14 @@ export default function (pi: ExtensionAPI) {
 
 	let idleTimer: NodeJS.Timeout | undefined;
 	let awayTimer: NodeJS.Timeout | undefined;
-	let postTurnTimer: NodeJS.Timeout | undefined;
 	let resumeTimer: NodeJS.Timeout | undefined;
 	let activeController: AbortController | undefined;
 	let pickerController: AbortController | undefined;
 	let agentActive = false;
 	let awayRecapPending = false;
+	let awayLongEnough = false;
 	let unsubscribeFocus: (() => void) | undefined;
 	let focusEnabled = false;
-	let isBlurred = false;
 	let focusEventsSeen = false;
 	let lastDraftedContext: string | undefined;
 	let retainedUI: ReturnType<typeof createRetainedRecapUI> | undefined;
@@ -495,15 +505,10 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 	const clearAwayTimer = () => {
+		awayLongEnough = false;
 		if (awayTimer) {
 			clearTimeout(awayTimer);
 			awayTimer = undefined;
-		}
-	};
-	const clearPostTurnTimer = () => {
-		if (postTurnTimer) {
-			clearTimeout(postTurnTimer);
-			postTurnTimer = undefined;
 		}
 	};
 	const clearResumeTimer = () => {
@@ -539,7 +544,7 @@ export default function (pi: ExtensionAPI) {
 		const controller = new AbortController();
 		activeController = controller;
 
-		const showStatus = reason === "manual" || reason === "idle";
+		const showStatus = reason === "manual" || reason === "idle" || reason === "focus";
 		if (showStatus) ctx.ui.setStatus(RECAP_KEY, ctx.ui.theme.fg("dim", "✦ drafting recap…"));
 
 		try {
@@ -557,7 +562,6 @@ export default function (pi: ExtensionAPI) {
 
 			lastDraftedContext = startContext;
 			clearIdleTimer();
-			clearPostTurnTimer();
 
 			// Read at display time: global changes affect subsequent rows, not old ones.
 			if (loadRecapSettings(path, ctx).keep) {
@@ -568,10 +572,10 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("session-recap: transcript layout unsupported; showing temporary recap", "warning");
 			}
 			showRecap(ctx, recap);
-		} catch {
-			// Provider errors may contain request details. Keep diagnostics out of the
-			// transcript, terminal stream, and notification.
-			if (!controller.signal.aborted) ctx.ui.notify("session-recap: recap request failed", "error");
+		} catch (error) {
+			// Provider errors may contain request details. Keep them out of the transcript
+			// and terminal stream; the notification carries only a safe reason.
+			if (!controller.signal.aborted) ctx.ui.notify(`session-recap: recap request failed (${describeFailure(error)})`, "error");
 		} finally {
 			if (activeController === controller) {
 				activeController = undefined;
@@ -580,8 +584,9 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	const tryAwayRecap = (ctx: ExtensionContext) => {
-		if (isDisabled() || ctx.mode !== "tui" || !isBlurred) return;
+	// One recap per time away, drafted on return so it covers everything that happened.
+	const recapOnReturn = (ctx: ExtensionContext) => {
+		if (isDisabled() || ctx.mode !== "tui") return;
 		if (agentActive && !pi.getFlag("recap-during-active")) {
 			awayRecapPending = true;
 			return;
@@ -591,24 +596,22 @@ export default function (pi: ExtensionAPI) {
 
 	const handleFocusOut = (ctx: ExtensionContext) => {
 		focusEventsSeen = true;
-		isBlurred = true;
 		clearIdleTimer();
 		if (isDisabled()) return;
 		clearAwayTimer();
+		// No model call while away: the timer only marks the absence as long enough.
 		awayTimer = setTimeout(() => {
 			awayTimer = undefined;
-			tryAwayRecap(ctx);
+			awayLongEnough = true;
 		}, flagMilliseconds("recap-away-seconds", DEFAULT_AWAY_SECONDS));
 	};
 
-	const handleFocusIn = () => {
+	const handleFocusIn = (ctx: ExtensionContext) => {
+		const returning = awayLongEnough;
 		focusEventsSeen = true;
-		isBlurred = false;
-		awayRecapPending = false;
 		clearAwayTimer();
-		clearPostTurnTimer();
 		clearIdleTimer();
-		// Leave an in-flight recap to land as the user returns.
+		if (returning) recapOnReturn(ctx);
 	};
 
 	const attachFocusReporting = (ctx: ExtensionContext) => {
@@ -630,7 +633,7 @@ export default function (pi: ExtensionAPI) {
 			let i = 0;
 			while (i + MAX_SEQ <= buf.length) {
 				if (buf.startsWith(FOCUS_IN_SEQ, i)) {
-					handleFocusIn();
+					handleFocusIn(ctx);
 					i += FOCUS_IN_SEQ.length;
 				} else if (buf.startsWith(FOCUS_OUT_SEQ, i)) {
 					handleFocusOut(ctx);
@@ -654,21 +657,11 @@ export default function (pi: ExtensionAPI) {
 			} catch {}
 			focusEnabled = false;
 		}
-		isBlurred = false;
 		awayRecapPending = false;
 	};
 
 	pi.on("turn_end", (_event, ctx) => {
 		if (isDisabled() || ctx.mode !== "tui") return;
-
-		// Debounce mid-loop turn_end → turn_start pairs.
-		if (isBlurred) {
-			clearPostTurnTimer();
-			postTurnTimer = setTimeout(() => {
-				postTurnTimer = undefined;
-				tryAwayRecap(ctx);
-			}, POST_TURN_DEBOUNCE_MS);
-		}
 
 		if (!focusEventsSeen) {
 			clearIdleTimer();
@@ -682,7 +675,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_start", (_event, ctx) => {
 		cancelPicker();
 		clearIdleTimer();
-		clearPostTurnTimer();
 		clearResumeTimer();
 		cancelActive();
 		clearRecap(ctx);
@@ -691,7 +683,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("input", (_event, ctx) => {
 		cancelPicker();
 		clearIdleTimer();
-		clearPostTurnTimer();
 		clearAwayTimer();
 		clearResumeTimer();
 		cancelActive();
@@ -703,7 +694,6 @@ export default function (pi: ExtensionAPI) {
 		cancelPicker();
 		agentActive = true;
 		clearIdleTimer();
-		clearPostTurnTimer();
 		clearResumeTimer();
 		cancelActive();
 		clearRecap(ctx);
@@ -713,7 +703,7 @@ export default function (pi: ExtensionAPI) {
 		agentActive = false;
 		if (awayRecapPending) {
 			awayRecapPending = false;
-			tryAwayRecap(ctx);
+			recapOnReturn(ctx);
 		}
 	});
 
@@ -723,7 +713,6 @@ export default function (pi: ExtensionAPI) {
 		cancelPicker();
 		clearIdleTimer();
 		clearAwayTimer();
-		clearPostTurnTimer();
 		clearResumeTimer();
 		cancelActive();
 		awayRecapPending = false;
@@ -740,7 +729,6 @@ export default function (pi: ExtensionAPI) {
 		lastDraftedContext = undefined;
 		clearIdleTimer();
 		clearAwayTimer();
-		clearPostTurnTimer();
 		clearResumeTimer();
 		cancelActive();
 		detachFocusReporting();
@@ -752,7 +740,6 @@ export default function (pi: ExtensionAPI) {
 		cancelPicker();
 		clearIdleTimer();
 		clearAwayTimer();
-		clearPostTurnTimer();
 		cancelActive();
 		clearRecap(ctx);
 		agentActive = false;
@@ -789,7 +776,6 @@ export default function (pi: ExtensionAPI) {
 			cancelPicker();
 			clearIdleTimer();
 			clearAwayTimer();
-			clearPostTurnTimer();
 			clearResumeTimer();
 			cancelActive();
 			awayRecapPending = false;

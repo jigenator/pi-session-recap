@@ -252,3 +252,127 @@ test("Pi 1.0 terminal-input listener and focus mode are released on shutdown", (
 	assert.equal(unsubscribed, 1);
 	assert.deepEqual(writes, ["\x1b[?1004h", "\x1b[?1004l"]);
 });
+
+function withFocusReporting(fn) {
+	const stdoutTty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+	const stdinTty = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+	const originalWrite = process.stdout.write;
+	Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+	Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+	// Swallow only focus-mode escapes; the test runner reports through stdout too.
+	process.stdout.write = (value, ...rest) =>
+		String(value).startsWith("\x1b[?1004") ? true : originalWrite.call(process.stdout, value, ...rest);
+	const restore = () => {
+		process.stdout.write = originalWrite;
+		if (stdoutTty) Object.defineProperty(process.stdout, "isTTY", stdoutTty);
+		else delete process.stdout.isTTY;
+		if (stdinTty) Object.defineProperty(process.stdin, "isTTY", stdinTty);
+		else delete process.stdin.isTTY;
+	};
+	return Promise.resolve().then(fn).finally(restore);
+}
+
+function startFocusedSession(t) {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	requestCount = 0;
+	responseFactory = async () => ({ role: "assistant", content: [{ type: "text", text: "Complete recap." }], stopReason: "stop" });
+	const pi = makePi();
+	const fixture = makeContext();
+	let listener;
+	fixture.ctx.ui.onTerminalInput = (handler) => {
+		listener = handler;
+		return () => {};
+	};
+	sessionRecap(pi);
+	pi.handlers.get("session_start")({ reason: "startup" }, fixture.ctx);
+	return {
+		pi,
+		...fixture,
+		blur: () => listener("\x1b[O"),
+		focus: () => listener("\x1b[I"),
+		settle: () => new Promise((resolve) => setImmediate(resolve)),
+	};
+}
+
+test("runs ending while away make no request; returning drafts exactly one recap", (t) => withFocusReporting(async () => {
+	const s = startFocusedSession(t);
+	s.blur();
+	t.mock.timers.tick(90_000);
+	for (let run = 0; run < 3; run++) {
+		s.pi.handlers.get("agent_start")({}, s.ctx);
+		s.pi.handlers.get("turn_end")({}, s.ctx);
+		s.pi.handlers.get("agent_settled")({}, s.ctx);
+		t.mock.timers.tick(10_000);
+		await s.settle();
+	}
+	assert.equal(requestCount, 0, "nothing is drafted while the pane is away");
+	s.focus();
+	await s.settle();
+	assert.equal(requestCount, 1);
+	assert.ok(s.widgets.some(Array.isArray), "the recap is shown on return");
+	s.blur();
+	t.mock.timers.tick(30_000);
+	s.focus();
+	await s.settle();
+	assert.equal(requestCount, 1, "returning again does not draft a second recap");
+	s.pi.handlers.get("session_shutdown")({ reason: "quit" }, s.ctx);
+}));
+
+test("a short pane switch never calls the model", (t) => withFocusReporting(async () => {
+	const s = startFocusedSession(t);
+	s.blur();
+	t.mock.timers.tick(89_000);
+	s.focus();
+	t.mock.timers.tick(90_000);
+	await s.settle();
+	assert.equal(requestCount, 0);
+	s.pi.handlers.get("session_shutdown")({ reason: "quit" }, s.ctx);
+}));
+
+test("each away period drafts at most one recap, and only for new activity", (t) => withFocusReporting(async () => {
+	const s = startFocusedSession(t);
+	const away = async () => {
+		s.blur();
+		t.mock.timers.tick(90_000);
+		s.focus();
+		await s.settle();
+	};
+	await away();
+	assert.equal(requestCount, 1);
+	await away();
+	assert.equal(requestCount, 1, "an unchanged session is not recapped again");
+	s.ctx.sessionManager.getBranch().push(
+		{ type: "message", message: { role: "user", content: "Now add the settings page." } },
+		{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "edit", arguments: {} }] } },
+	);
+	await away();
+	assert.equal(requestCount, 2);
+	s.pi.handlers.get("session_shutdown")({ reason: "quit" }, s.ctx);
+}));
+
+test("returning while the agent works drafts once it settles", (t) => withFocusReporting(async () => {
+	const s = startFocusedSession(t);
+	s.pi.handlers.get("agent_start")({}, s.ctx);
+	s.blur();
+	t.mock.timers.tick(90_000);
+	s.focus();
+	await s.settle();
+	assert.equal(requestCount, 0, "no recap while the agent is still running");
+	s.pi.handlers.get("agent_settled")({}, s.ctx);
+	await s.settle();
+	assert.equal(requestCount, 1);
+	s.pi.handlers.get("session_shutdown")({ reason: "quit" }, s.ctx);
+}));
+
+test("typing after returning drops a pending recap", (t) => withFocusReporting(async () => {
+	const s = startFocusedSession(t);
+	s.pi.handlers.get("agent_start")({}, s.ctx);
+	s.blur();
+	t.mock.timers.tick(90_000);
+	s.focus();
+	s.pi.handlers.get("input")({}, s.ctx);
+	s.pi.handlers.get("agent_settled")({}, s.ctx);
+	await s.settle();
+	assert.equal(requestCount, 0);
+	s.pi.handlers.get("session_shutdown")({ reason: "quit" }, s.ctx);
+}));

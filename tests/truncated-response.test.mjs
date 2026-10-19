@@ -124,10 +124,16 @@ assert.deepEqual(failed.widgets, [], "a failed stream must not render its partia
 assert.equal(failed.notices.length, 1, "a failed stream must be reported once");
 assert.equal(
 	failed.notices[0][0],
-	"session-recap: recap request failed",
+	"session-recap: recap request failed (provider error)",
 	"provider details must not leak through the notification",
 );
 assert.equal(failed.notices[0][1], "error", "a stream failure is an error-level notification");
+
+// A status code is safe to show; the provider's message is not.
+const capReached = await run(message("error", "", {
+	errorMessage: '{"error":{"message":"Your project has exceeded its monthly spending cap. key=secret","code":429,"status":"Too Many Requests"}}',
+}));
+assert.deepEqual(capReached.notices, [["session-recap: recap request failed (HTTP 429: rate limit or spending cap reached)", "error"]]);
 
 // An aborted stream is an ordinary cancellation, not a fault: drop it silently.
 const aborted = await run(message("aborted", "I"));

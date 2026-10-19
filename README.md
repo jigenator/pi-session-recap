@@ -22,8 +22,7 @@ No install or live configuration change is performed by this repository’s test
 
 ## Triggers
 
-- **Away:** after 90 seconds of continuous terminal or Herdr-pane blur.
-- **Turn ended while away:** after a short debounce, once Pi reaches `agent_settled` (after retries, compaction, or queued continuation).
+- **Return:** one recap when you focus the terminal or Herdr pane again after at least 90 seconds of continuous blur. Nothing is drafted while you are away, however many runs end. If the agent is still running when you return, the recap waits for `agent_settled` (after retries, compaction, or queued continuation); typing first drops it. An unchanged session is not recapped again.
 - **Idle fallback:** 120 seconds after `turn_end` until a real focus event has been seen. Use this when the terminal or multiplexer does not forward focus reliably.
 - **Orientation:** shortly after a session resumes or forks.
 - **Manual:** `/recap` for a brief orientation, or `/recap detailed` for an on-demand breakdown of the current session. Both bypass the meaningful-activity gate.
@@ -42,10 +41,10 @@ Type `/recap ` to see Pi's native suggestions: `model`, `keep`, and `detailed`. 
 
 | Flag | Default | Purpose |
 |---|---:|---|
-| `--recap-away-seconds <n>` | `90` | Continuous blur before an away recap. |
+| `--recap-away-seconds <n>` | `90` | Continuous blur before returning drafts a recap. |
 | `--recap-idle-seconds <n>` | `120` | No-focus-event fallback after `turn_end`. |
 | `--recap-disable-focus` | `false` | Disable DECSET `?1004`; idle fallback remains active. |
-| `--recap-during-active` | `false` | Permit away recaps before the agent fully settles. |
+| `--recap-during-active` | `false` | Draft the return recap without waiting for the agent to settle. |
 | `--recap-disable` | `false` | Disable automatic recaps; `/recap` still works. |
 | `--recap-model "<provider>/<id>"` | automatic | Explicit recap model; malformed or unknown IDs fall back to the active model. |
 
@@ -81,7 +80,7 @@ Pi 1.0 transcript system messages (including prompt sections and tool declaratio
 - **Detailed:** output preserves headings/bullets/newlines and allows up to 4,096 tokens, capped by the selected model's declared output maximum. Input spans the edited active branch without a message-window bound or initial-request truncation; summaries are excluded as described above.
 - **Both:** each long tool-result text block retains its first/last 2,000 characters with a truncation marker. There is no hard total-input-token budget: ordinary messages, tool calls, images, and (for brief recaps) summaries can still be large. A long detailed session may exceed the selected provider's context limit and fail; there is no automatic chunking, retry, extra summarization call, or silent fallback to recent-only history.
 
-Only a clean `stopReason: "stop"` is displayed; failed, aborted, deferred, tool-use, pending, and token-limit-truncated responses are discarded. Errors are reported without provider details.
+Only a clean `stopReason: "stop"` is displayed; failed, aborted, deferred, tool-use, pending, and token-limit-truncated responses are discarded. Errors are reported with only a safe reason, such as an HTTP status (`HTTP 429: rate limit or spending cap reached`) or a network error code, never the provider's message.
 
 A Pi-only custom API handler (for example, a runtime-only `claude-bridge` handler) cannot be routed by the standalone `pi-ai` compatibility completion. That case is skipped silently. Being listed in Pi’s picker is not proof of standalone recap compatibility; custom APIs are not filtered out. Select a built-in API-backed provider/model with `/recap model` or `--recap-model` if one is available. OpenAI Codex and Google models using built-in Pi API types are supported by the same completion path.
 

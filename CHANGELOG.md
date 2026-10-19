@@ -18,6 +18,8 @@
 - Exclude Pi 1.0 transcript system messages and their prompt/tool declarations from recap input.
 
 ### Changed
+- Draft one recap per time away, when you return, instead of one after every run that ends while the pane is blurred. Background orchestrator panes previously drafted a recap per subagent update. The away timer now only marks the absence as long enough; it makes no model call.
+- Failure notifications name a safe reason (HTTP status or network error code) instead of only "recap request failed". Provider messages are still never shown.
 - Use Pi 1.0's owned `ctx.ui.onTerminalInput()` hook for focus reports instead of attaching directly to stdin.
 - Reset per-session focus and deduplication state when Pi binds a replacement session.
 - Ask for a recent concrete result as well as the high-level task and next step or blocker.
